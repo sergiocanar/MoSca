@@ -138,6 +138,9 @@ def preprocess(
 
     if hasattr(s2d, "epi"):
         sample_mask = s2d.epi > EPI_TH
+        if sample_mask.sum() == 0:
+            logging.warning("No dynamic pixels found in epi mask — falling back to uniform sampling for dynamic TAP.")
+            sample_mask = torch.ones_like(s2d.epi).bool()
     else:
         continuous_pair_list = make_pair_list(s2d.T, interval=[1, 4], dense_flag=True)
         F_list, epierr_list, _ = analyze_track_epi(
