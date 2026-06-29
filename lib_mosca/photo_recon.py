@@ -624,6 +624,8 @@ class DynReconstructionSolver:
 
                 # compute losses
                 rgb_sup_mask = s2d.get_mask_by_key(sup_mask_type)[view_ind]
+                if hasattr(s2d, "tool_mask"):
+                    rgb_sup_mask = rgb_sup_mask * (~s2d.tool_mask[view_ind])
                 _l_rgb, _, _, _ = compute_rgb_loss(
                     s2d.rgb[view_ind].detach().clone(), render_dict, rgb_sup_mask
                 )

@@ -192,3 +192,7 @@ data.zip
 weights.zip
 
 .vscode
+
+#iMed specific
+workspaces/
+baseline/

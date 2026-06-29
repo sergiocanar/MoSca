@@ -317,6 +317,17 @@ def moca_solve(
     torch.cuda.empty_cache()
 
     # * 6 finish
+    bundle_dir = osp.join(ws, "bundle")
+    os.makedirs(bundle_dir, exist_ok=True)
+
+    # When BA is skipped (ba_total_steps=0), save identity depth scales so
+    # downstream rescale_perframe_depth_from_bundle() can load bundle.pth.
+    if ba_total_steps == 0:
+        dep_scale = torch.ones(cams.T)
+        torch.save(cams.state_dict(), osp.join(bundle_dir, "bundle_cams.pth"))
+        torch.save({"dep_scale": dep_scale, "dep_correction": torch.zeros(1)},
+                   osp.join(bundle_dir, "bundle.pth"))
+
     viz_all_pts = get_all_world_pts_list(
         s2d.homo_map, s2d.dep, s2d.rgb, s2d.dep_mask, cams
     )
@@ -325,6 +336,6 @@ def moca_solve(
     viz_all_pts = viz_all_pts[viz_all_sel]
     viz_all_pts[:, 3:] = viz_all_pts[:, 3:] * 255
     print(viz_all_pts.shape)
-    np.savetxt(osp.join(ws, "bundle", "all_pts.xyz"), viz_all_pts[:, :6], fmt="%.5f")
+    np.savetxt(osp.join(bundle_dir, "all_pts.xyz"), viz_all_pts[:, :6], fmt="%.5f")
 
     return cams, s2d, track_static_selection

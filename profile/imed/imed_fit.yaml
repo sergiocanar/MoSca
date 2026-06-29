@@ -1,0 +1,108 @@
+# iMED NVS reconstruction config
+# Cameras: Endoscope 2-L is static → all-identity poses, fully frozen.
+# Depth: sensor depth in mm, dep_median=-1 skips normalization → world units = mm.
+# Dynamic detection: pseudo-epi from SAM tool masks (epi_th=0.5).
+
+exp_name: imed_fit
+mode: imed
+
+# --- Depth -----------------------------------------------------------------
+dep_median: -1.0          # skip depth normalization; world stays in mm
+depth_dirname: sensor_depth
+depth_boundary_th: 1.0
+
+# --- TAP -------------------------------------------------------------------
+tap_mode: bootstapir
+tap_loading_min_valid_cnt: 4
+
+# --- Dynamic detection (pseudo-epi from tool masks) ------------------------
+epi_th: 0.5
+dyn_id_cnt: 8
+
+# --- Camera BA: fully frozen (GT identity poses from imed_meta.npz) --------
+init_gt_camera: True
+init_gt_camera_focal_only: False
+ba_total_steps: 0         # skip BA entirely; GT poses are authoritative
+ba_lr_cam_f: 0.0
+ba_lr_cam_q: 0.0
+ba_lr_cam_t: 0.0
+ba_lr_dep_s: 0.0          # depth in mm is authoritative, do not rescale
+ba_lr_dep_c: 0.0
+
+# --- Dynamic curve filtering (thresholds in mm, world is not normalized) ---
+# Default 0.15 * scale_nw is calibrated for normalized world (median depth=1).
+# With dep_median=-1, scale_nw=1 so thresholds stay at 0.15mm which is too tight.
+# Set explicitly to ~10mm (≈ 0.15 * 60mm median depth).
+get_curve_refilter_shaking_th_world: 10.0
+get_curve_refilter_spatracker_consistency_th_world: 10.0
+
+# --- MoSca scaffold --------------------------------------------------------
+# mosca_unit_world in mm (world is in mm when dep_median=-1)
+mosca_unit_world: 2.0
+mosca_sigma_init_ratio: 5.0
+mosca_dist_k: 3
+mosca_topo_th_ratio: 5.0
+mosca_topo_sample_T: 100
+mosca_skinning_k: 16
+mosca_mlevel_list: [1, 7, 15]
+mosca_mlevel_k_list: [16, 8, 8]
+mosca_mlevel_w_list: [0.4, 0.3, 0.3]
+
+scf_geo_keyframe_rate: 4
+
+# --- Geometric scaffold optimization ---------------------------------------
+geo_temporal_diff_shift: [2, 8, 16]
+geo_temporal_diff_weight: [0.6, 0.4, 0.3]
+
+geo_mosca_steps: 1500
+geo_mosca_lr_q: 0.03
+geo_mosca_lr_p: 0.03
+geo_mosca_viz_interval: 600
+geo_mosca_viz_debug_interval: 600
+
+# --- Gaussian splatting init -----------------------------------------------
+gs_static_n_init: 30000
+gs_dynamic_n_init: 30000
+gs_radius_max: 3.0        # mm units
+gs_max_sph_order: 3
+
+# --- Photometric reconstruction --------------------------------------------
+photo_total_steps: 8000
+photo_skinning_corr_start_steps: 6000
+photo_lr_np: 0.0003
+photo_lr_nq: 0.0003
+
+photo_lr_w: 0.003
+photo_lambda_small_w_reg: 0.3
+
+photo_lambda_track: 0.1
+photo_track_loss_interval: 3
+photo_track_flow_chance: 0.0
+track_flow_interval_candidates: [1, 3]
+
+photo_temporal_diff_shift: [1, 3, 6]
+photo_temporal_diff_weight: [0.6, 0.3, 0.1]
+photo_optim_cam_after_steps: 999999  # never optimize cameras during photometric step
+
+photo_s_ctrl_prune_opacity_th: 0.01
+photo_d_ctrl_prune_opacity_th: 0.01
+
+photo_d_ctrl_densify_steps: 300
+photo_s_ctrl_densify_steps: 300
+
+photo_d_ctrl_prune_steps: 300
+photo_s_ctrl_prune_steps: 300
+
+photo_viz_interval: -1
+photo_viz_cheap_interval: 1001
+
+photo_d_ctrl_reset_steps: 1000
+photo_s_ctrl_reset_steps: 1000
+
+photo_s2d_trans_steps: [3000, 4000, 5000]
+photo_dyn_scf_prune_steps: [4500, 5500, 6500]
+photo_dyn_scf_prune_sk_th: 0.02
+
+photo_dyn_node_densify_steps: [4250, 5250]
+photo_dyn_node_densify_grad_th: 0.03
+photo_dyn_node_densify_record_start_steps: 2000

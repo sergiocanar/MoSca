@@ -342,7 +342,10 @@ def scaffold_reconstruct(ws, log_path, fit_cfg):
         curve_filter_mask[curve_filter_mask.clone()] = refilter_valid_curve_mask
         curve_uv = curve_uv[:, refilter_valid_curve_mask]
 
-    viz_mosca_curves_before_optim(curve_xyz, curve_rgb, curve_mask, cams, log_path)
+    try:
+        viz_mosca_curves_before_optim(curve_xyz, curve_rgb, curve_mask, cams, log_path)
+    except Exception as e:
+        logging.warning(f"viz_mosca_curves_before_optim failed (non-fatal): {e}")
 
     # * get scaffold
     scaffold: MoSca = MoSca(

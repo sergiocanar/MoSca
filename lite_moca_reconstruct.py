@@ -11,6 +11,7 @@ from mosca_evaluate import test_tum_cam, test_sintel_cam
 
 from data_utils.iphone_helpers import load_iphone_gt_poses
 from data_utils.nvidia_helpers import load_nvidia_gt_pose, get_nvidia_dummy_test
+from data_utils.imed_helpers import load_imed_gt_poses
 
 from recon_utils import (
     seed_everything,
@@ -48,6 +49,8 @@ def load_gt_cam(ws, fit_cfg):
             gt_training_cxcy_ratio,
             gt_testing_cxcy_ratio_list,
         )
+    elif mode == "imed":
+        return load_imed_gt_poses(ws)
     else:
         raise RuntimeError(f"Unknown mode: {mode}")
     return
@@ -77,6 +80,9 @@ def static_reconstruct(ws, log_path, fit_cfg):
         )
         .load_vos()
     )
+
+    if getattr(fit_cfg, "mode", "") == "imed":
+        s2d.load_tool_mask("train_masks")
 
     if INIT_GT_CAMERA_FLAG:
         # if start form gt camera, load gt camera here

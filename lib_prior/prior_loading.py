@@ -339,6 +339,24 @@ class Saved2D(nn.Module):
         return self
 
     @torch.no_grad()
+    def load_tool_mask(self, mask_dirname="train_masks"):
+        mask_dir = osp.join(self.ws, mask_dirname)
+        if not osp.exists(mask_dir):
+            logging.warning(f"Tool mask dir {mask_dir} not found, skipping.")
+            return self
+        fn_list = sorted(os.listdir(mask_dir))
+        masks = []
+        for fn in fn_list:
+            m = imageio.imread(osp.join(mask_dir, fn))
+            if m.ndim == 3:
+                m = m[..., 0]
+            masks.append((m > 127).astype(bool))
+        tool_mask = torch.from_numpy(np.stack(masks, 0))  # [T, H, W] bool, 1=tool
+        self.register_gradfree_buffer("tool_mask", tool_mask)
+        logging.info(f"Loaded tool masks from {mask_dirname}: tool={tool_mask.float().mean()*100:.1f}%")
+        return self
+
+    @torch.no_grad()
     def load_vos(self, vos_dirname="vos_deva/Annotations"):
         vos_dir = osp.join(self.ws, vos_dirname)
         if not osp.exists(vos_dir):

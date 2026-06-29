@@ -1,0 +1,18 @@
+# iMED NVS precompute config
+# Depth is provided (FoundationStereo, .npy → converted to .npz by imed_prepare_workspace.py)
+# Pseudo-epi from SAM tool masks is written by imed_prepare_workspace.py
+# RAFT flow is skipped (static cameras → motion epipolar error is meaningless)
+
+dep_mode: sensor
+tap_mode: bootstapir
+flow_mode: none          # static camera → skip RAFT
+
+tap_chunk_size: 5000
+n_track_uniform: 8192
+n_track_dynamic: 16384
+
+epi_th: 0.5              # pseudo-epi: 0=background, 1=tool; threshold at 0.5
+align_metric_flag: False # depth already metric (FoundationStereo, mm)
+boundary_enhance_th: -1
+
+depth_boundary_th: 1.0
