@@ -196,3 +196,6 @@ weights.zip
 #iMed specific
 workspaces/
 baseline/
+my_test_output/
+preds/
+assets/

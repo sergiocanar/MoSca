@@ -1,0 +1,37 @@
+# Never bake challenge data into the image (guideline pitfall #4) -- data/
+# holds a symlink straight to the mounted iMED_NVS dataset.
+data/
+
+# Local dev run outputs (88GB across 19 sequences as of writing) -- must never
+# be part of the build context, let alone the image.
+workspaces/
+
+# Unused weights for the iMED path (dep_mode=sensor, tap_mode=bootstapir,
+# flow_mode=none): RAFT (flow) and SpaTracker are never loaded. Only
+# weights/tapnet/bootstapir_checkpoint_v2.pt is needed and is NOT excluded.
+weights.zip
+weights/raft_models/
+weights/spaT_final.pth
+
+# Docs/demo/notebooks/logs, not needed at runtime.
+# NOTE: eval_utils/ is NOT excluded -- mosca_reconstruct.py unconditionally
+# imports mosca_evaluate.py (for test_tum_cam/test_sintel_cam/etc., used by
+# other dataset modes), which unconditionally imports eval_utils.eval_nvidia/
+# eval_dyncheck/eval_sintel_cam/eval_tum_cam/campose_alignment at module load
+# time regardless of `mode`, even though mode=imed never calls those eval
+# functions. Must be present or mosca_reconstruct.py fails to import at all.
+.git
+demo/
+baseline/
+assets/
+*.ipynb
+*.log
+mosca_imed_metrics.xlsx
+jax_requirements.txt
+.vscode/
+
+# Stale local build artifacts for the CUDA extensions -- these must be built
+# fresh inside the image against its own torch/CUDA/Python ABI.
+**/build/
+**/*.egg-info/
+**/__pycache__/
