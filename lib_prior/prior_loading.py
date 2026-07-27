@@ -357,6 +357,42 @@ class Saved2D(nn.Module):
         return self
 
     @torch.no_grad()
+    def load_overlap_weight(
+        self,
+        rgb_out_w=1.0,
+        dep_in_w=1.0,
+        dep_out_w=1.0,
+        meta_fn="imed_meta.npz",
+    ):
+        """Reweight rgb/dep supervision by the iMED train-side overlap mask.
+
+        In-overlap pixels are the ones whose geometry actually lands in the
+        held-out Endo1L test view, i.e. the only pixels that determine eval
+        score. Out-of-overlap pixels keep a nonzero weight (not excluded
+        entirely) so the scaffold/background stay regularized outside it.
+        """
+        meta_path = osp.join(self.ws, meta_fn)
+        if not osp.exists(meta_path):
+            logging.warning(f"{meta_path} not found, skipping overlap weighting.")
+            return self
+        meta = np.load(meta_path, allow_pickle=True)
+        if "overlap_mask_train" not in meta:
+            logging.warning(
+                f"{meta_fn} has no overlap_mask_train, skipping overlap weighting."
+            )
+            return self
+        overlap = torch.from_numpy(meta["overlap_mask_train"]).float()  # [H,W]
+        overlap_weight_rgb = overlap * 1.0 + (1.0 - overlap) * rgb_out_w
+        overlap_weight_dep = overlap * dep_in_w + (1.0 - overlap) * dep_out_w
+        self.register_gradfree_buffer("overlap_weight_rgb", overlap_weight_rgb)
+        self.register_gradfree_buffer("overlap_weight_dep", overlap_weight_dep)
+        logging.info(
+            f"Loaded iMED overlap weight: in-overlap={overlap.mean()*100:.1f}% of frame; "
+            f"rgb(in/out)=1.0/{rgb_out_w}, dep(in/out)={dep_in_w}/{dep_out_w}"
+        )
+        return self
+
+    @torch.no_grad()
     def load_vos(self, vos_dirname="vos_deva/Annotations"):
         vos_dir = osp.join(self.ws, vos_dirname)
         if not osp.exists(vos_dir):

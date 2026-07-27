@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Run full iMED pipeline on all 20 sequences.
+# Run full iMED pipeline on all 20 sequences (or a subset).
 # Step 2 (TAP tracking) is skipped when tracks already exist.
-# Usage: bash scripts/imed_run_all_20.sh [gpu_id]
-# Example: bash scripts/imed_run_all_20.sh 0
+# Usage: bash scripts/imed_run_all_20.sh [gpu_id] [seq1 seq2 ...]
+# Example: bash scripts/imed_run_all_20.sh 0                     # all 20
+#          bash scripts/imed_run_all_20.sh 1 seq_a seq_b seq_c   # just these, on GPU1
 
 set -euo pipefail
 
@@ -10,7 +11,7 @@ GPU="${1:-0}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPTS="${REPO}/scripts"
 
-SEQUENCES=(
+ALL_SEQUENCES=(
     session_004_scene_2_tool_1
     session_004_scene_2_tool_2
     session_004_scene_2_tool_3
@@ -32,6 +33,12 @@ SEQUENCES=(
     session_007_scene_5_tool_1
     session_007_scene_5_tool_2
 )
+
+if [ "$#" -gt 1 ]; then
+    SEQUENCES=("${@:2}")
+else
+    SEQUENCES=("${ALL_SEQUENCES[@]}")
+fi
 
 TOTAL=${#SEQUENCES[@]}
 FAILED=()

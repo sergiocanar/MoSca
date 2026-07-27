@@ -188,7 +188,7 @@ def readImages(renders_dir, gt_dir, masks_dir, overlap_mask_path=None):
             overlap_mask = overlap_mask[:, :1, :, :]
         overlap_mask = (overlap_mask > 0.5).float()
     
-    tool_masks = []  # raw per-frame tool masks (1=tool) before any overlap replacement
+    valid_masks = []  # raw per-frame valid/non-tool masks (1=background), pre-overlap
     for fname in os.listdir(renders_dir):
         render = np.array(Image.open(renders_dir / fname))
         gt = np.array(Image.open(gt_dir / fname))
@@ -200,12 +200,14 @@ def readImages(renders_dir, gt_dir, masks_dir, overlap_mask_path=None):
         if frame_mask.shape[1] > 1:
             frame_mask = frame_mask[:, :1, :, :]
         frame_mask = (frame_mask > 0.5).float()
-        tool_masks.append(frame_mask)  # keep tool mask before overlap replacement
+        valid_masks.append(frame_mask)  # keep for debug viz, before overlap is applied
+        # Matches the official Endo-4DGS/metrics.py: multiply, don't replace --
+        # masks_dir already stores the valid/non-tool region (see imed_evaluate.py).
         if overlap_mask is not None:
-            frame_mask = overlap_mask
+            frame_mask = frame_mask * overlap_mask
         masks.append(frame_mask)
         image_names.append(fname)
-    return renders, gts, masks, image_names, tool_masks
+    return renders, gts, masks, image_names, valid_masks
 
 
 def evaluate(model_paths):
@@ -241,16 +243,18 @@ def evaluate(model_paths):
                 masks_dir = method_dir / "masks"
                 overlap_mask_path = method_dir / "overlap_mask.png"
                 
-                renders, gts, masks, image_names, tool_masks = readImages(renders_dir, gt_dir, masks_dir, overlap_mask_path)
+                renders, gts, masks, image_names, valid_masks = readImages(renders_dir, gt_dir, masks_dir, overlap_mask_path)
                 if len(renders) > 0:
                     out_h, out_w = int(renders[0].shape[2]), int(renders[0].shape[3])
                     source_path = _extract_source_path_from_cfg(scene_dir)
                     if source_path is not None and "imed" in source_path.lower():
                         global_mask = _build_global_imed_overlap_mask(source_path, out_h, out_w)
                         global_mask_t = torch.from_numpy(global_mask).unsqueeze(0).unsqueeze(0).to(device="cuda", dtype=torch.float32)
-                        # FIX: combine overlap region with per-frame tool exclusion (overlap AND NOT tool)
+                        # Matches the official Endo-4DGS/metrics.py: recompute the eval
+                        # mask as (per-frame valid mask) AND (freshly-computed overlap),
+                        # regardless of whether overlap_mask.png existed before this run.
                         for i in range(len(masks)):
-                            masks[i] = global_mask_t * (1.0 - tool_masks[i])
+                            masks[i] = valid_masks[i] * global_mask_t
                         Image.fromarray((global_mask * 255.0).astype(np.uint8)).save(overlap_mask_path)
                         Image.fromarray((global_mask * 255.0).astype(np.uint8)).save(method_dir / "imed_reprojection_mask.png")
 
@@ -262,7 +266,7 @@ def evaluate(model_paths):
                             d.mkdir(exist_ok=True)
                         for i, fname in enumerate(image_names):
                             # tool mask: white = tool (excluded), black = background
-                            tool_np = (tool_masks[i].squeeze().cpu().numpy() * 255).astype(np.uint8)
+                            tool_np = ((1.0 - valid_masks[i]).squeeze().cpu().numpy() * 255).astype(np.uint8)
                             Image.fromarray(tool_np).save(debug_tool_dir / fname)
                             # eval mask: white = evaluated pixels, black = excluded
                             eval_np = (masks[i].squeeze().cpu().numpy() * 255).astype(np.uint8)

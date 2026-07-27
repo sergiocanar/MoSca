@@ -121,3 +121,34 @@ python mosca_evaluate.py --ws <scene_dir> --cfg <fit.yaml> --logdir <logdir>
 # Collect metrics across all scenes
 jupyter notebook collect_metrics.ipynb
 ```
+
+## iMED Challenge Adaptation
+
+A separate pipeline adapts MoSca for the iMED MICCAI 2026 Challenge (EndoVis 2026, Task 2 — Deformable NVS): dual static-endoscope surgical video, training on Endoscope 2-L and testing novel-view synthesis on the held-out Endoscope 1-L viewpoint. This mode reuses the core MoSca solver but swaps in known camera poses, sensor depth, and tool masks instead of estimating them.
+
+**Per-sequence workflow** (`scripts/imed_step{1..5}_*.sh <sequence_name> [gpu_id]`, or `scripts/imed_run_all.sh [gpu_id]` for all sequences):
+```bash
+python imed_prepare_workspace.py --imed_seq data/iMED_NVS/<seq> --ws workspaces/<seq>   # step 1: build workspace
+python mosca_precompute.py --cfg profile/imed/imed_prep.yaml --ws workspaces/<seq>       # step 2: TAP tracking only (depth/flow pre-provided)
+python mosca_reconstruct.py --cfg profile/imed/imed_fit.yaml --ws workspaces/<seq>       # step 3: frozen-camera scaffold + photometric GS
+python imed_evaluate.py --ws workspaces/<seq> --logdir workspaces/<seq>/logs/<ts>        # step 4: render Endo1L, compute PSNR/SSIM
+bash scripts/imed_step5_video.sh <seq>                                                    # step 5: side-by-side compare.webm
+```
+
+- `imed_prepare_workspace.py` converts a raw `data/iMED_NVS/<seq>/` directory (per-cam `L/`, `depthL/`, `toolL/`, plus `K.txt`/`pose.txt`) into a standard MoSca workspace: `images/`, `sensor_depth/`, pseudo-epi from tool masks (`epi/error/`), `test_images/`, `test_masks/`, and `imed_meta.npz` (intrinsics, poses, depth scale). Its `--inference` flag skips reading `endoscope1/` entirely (reusing the training resolution/frame count instead) — used by the Docker submission path below, since hidden test sequences don't ship `endoscope1/` at all.
+- `data_utils/imed_helpers.py` parses `K.txt`/`pose.txt`. Convention: `cam_id=0` = Endoscope 2-L (training, identity pose = world origin), `cam_id=1` = Endoscope 1-L (test) in Endo2L world, units mm.
+- `profile/imed/imed_prep.yaml` and `profile/imed/imed_fit.yaml` configure `mode=imed` with `dep_mode=sensor`, `flow_mode=none`, and frozen cameras.
+- `lite_moca_reconstruct.py`'s `load_gt_cam()` has an `imed` branch to load the known Endo2L/Endo1L poses instead of running BA.
+- `lib_mosca/imed_render_utils.py` holds the shared Endo1L render loop (`load_trained_models()`, `render_frame()`) used by both `imed_evaluate.py` (dev, with GT/metrics) and `imed_submission_render.py` (Docker submission, no GT) — keeps the two from silently diverging.
+- Baselines for comparison live under `baseline/imed/<seq>/`; `scripts/imed_baseline_metrics.sh` and `scripts/imed_collect_metrics.sh` aggregate results.
+
+### Docker Submission
+
+Root-level `Dockerfile` + `imed_nvs_submission.py` package the same pipeline (prepare → precompute → reconstruct → render) for the challenge evaluator, structured after `Endo-4DGS/Dockerfile` + `Endo-4DGS/imed_nvs_baseline.py`. Key differences from the dev pipeline: `imed_prepare_workspace.py` runs with `--inference` (no `endoscope1/` read), and `imed_submission_render.py` writes bare sequential `renders/00000.png...` with no GT copy or metrics (there is no GT at submission time). The `native_add3` GS backend (the one actually dispatched at render time) and the plain `native` backend (pulled in transitively at import time by viz-only helpers like `lib_moca/viz_helper.py`, even though never rendered with) are both built into the image; only the `gof` backend is skipped (no code path imports it, dispatched or not). `pytorch3d`/`torch_geometric` (required by `lib_mosca/dynamic_gs.py`) and the `bootstapir` TAP checkpoint are also built in — `xformers`, `cupy`, `mmcv`, RAFT, and SpaTracker weights are all unused on this code path (`dep_mode=sensor`, `tap_mode=bootstapir`, `flow_mode=none`) and excluded.
+
+```bash
+docker build -t mosca-nvs-submission:dev .
+./scripts/local_test.sh mosca-nvs-submission:dev /path/to/iMED_NVS/train ./my_test_output
+```
+
+`scripts/local_test.sh` and `scripts/check_outputs.py` are copied unchanged from `Endo-4DGS/imednvs_submission/scripts/` (generic image/input/output driver + output-shape checker). Tag/push to Synapse the same way as documented in `Endo-4DGS/README.md`'s Docker section.

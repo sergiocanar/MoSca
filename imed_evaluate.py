@@ -14,7 +14,12 @@ Output structure (consumed by metrics.py):
     <logdir>/test/mosca/
         renders/frame_XXXX.png    ← rendered Endo1L views
         gt/frame_XXXX.png         ← Endo1L ground-truth images
-        masks/frame_XXXX.png      ← Endo1L tool masks
+        masks/frame_XXXX.png      ← Endo1L valid-region masks, official Endo-4DGS
+                                     convention: mask = 1 - raw_tool/255, i.e.
+                                     nonzero = background/valid, zero = tool.
+                                     (test_masks/ in the workspace stores the raw
+                                     tool mask instead, nonzero = tool; it is
+                                     inverted here when copied.)
         overlap_mask.png          ← auto-computed by metrics.py from pose/depth
 """
 
@@ -33,16 +38,9 @@ from PIL import Image
 from tqdm import tqdm
 
 from lib_moca.camera import MonocularCameras
-from lib_mosca.dynamic_gs import DynSCFGaussian
-from lib_mosca.static_gs import StaticGaussian
-from lib_render.render_helper import render, GS_BACKEND
+from lib_mosca.imed_render_utils import build_K_tensor, load_trained_models, render_frame
 from metrics import evaluate as metrics_evaluate
 from metrics import _build_global_imed_overlap_mask
-
-
-def _build_K_tensor(K_np, device="cuda"):
-    K = torch.from_numpy(K_np).float().to(device)
-    return K
 
 
 @torch.no_grad()
@@ -69,19 +67,10 @@ def render_imed_nvs(
     # World is in mm (dep_median=-1), c2w_test already in mm → no scale needed.
     T_cw_test = np.linalg.inv(c2w_test)
     T_cw_test_t = torch.from_numpy(T_cw_test).float().to(device)
-    K1L_t = _build_K_tensor(K1L, device)
+    K1L_t = build_K_tensor(K1L, device)
 
     # --- Load trained models --------------------------------------------------
-    s_model = StaticGaussian.load_from_ckpt(
-        torch.load(osp.join(logdir, f"photometric_s_model_{GS_BACKEND.lower()}.pth"),
-                   map_location="cpu"),
-    ).to(device)
-    d_model = DynSCFGaussian.load_from_ckpt(
-        torch.load(osp.join(logdir, f"photometric_d_model_{GS_BACKEND.lower()}.pth"),
-                   map_location="cpu"),
-    ).to(device)
-    s_model.eval()
-    d_model.eval()
+    s_model, d_model = load_trained_models(logdir, device)
 
     # --- Output dirs ----------------------------------------------------------
     method_dir = osp.join(logdir, "test", "mosca")
@@ -102,22 +91,23 @@ def render_imed_nvs(
         dst_mask = osp.join(masks_dir,     f"{name}.png")
         if osp.exists(src_img) and not osp.exists(dst_img):
             shutil.copy2(src_img, dst_img)
-        if osp.exists(src_mask) and not osp.exists(dst_mask):
-            shutil.copy2(src_mask, dst_mask)
+        if osp.exists(src_mask):
+            # test_masks/ holds the raw tool mask (nonzero = tool). The
+            # official Endo-4DGS metrics.py expects the opposite convention
+            # (mask = 1 - raw/255, nonzero = valid/background) and uses the
+            # file's value directly as the eval region -- invert here so
+            # eval scores background, not the tool. Always rewritten (cheap)
+            # so stale un-inverted masks from before this fix get corrected.
+            raw = np.array(Image.open(src_mask))
+            if raw.ndim == 3:
+                raw = raw[..., 0]
+            valid = (255 - raw).astype(np.uint8)
+            Image.fromarray(valid).save(dst_mask)
 
     # --- Render each frame ----------------------------------------------------
     s_gs5 = s_model()
     for t in tqdm(range(T), desc="Rendering Endo1L NVS"):
-        d_gs5 = d_model(t)
-        render_dict = render(
-            [s_gs5, d_gs5],
-            H1,
-            W1,
-            K1L_t,
-            T_cw=T_cw_test_t,
-        )
-        rgb = render_dict["rgb"].permute(1, 2, 0).cpu().numpy()
-        rgb = np.clip(rgb, 0.0, 1.0)
+        rgb = render_frame(s_gs5, d_model, t, K1L_t, T_cw_test_t, H1, W1)
         name = frame_names_test[t]
         imageio.imwrite(osp.join(renders_dir, f"{name}.png"), rgb)
 
@@ -191,14 +181,16 @@ def compute_corrected_metrics(logdir, ws, imed_seq):
     for name in tqdm(fnames, desc="Corrected metrics"):
         pred = tvf.to_tensor(np.array(Image.open(osp.join(renders_dir, name)))).cuda()  # [3,H,W]
         gt   = tvf.to_tensor(np.array(Image.open(osp.join(gt_dir,      name)))).cuda()
-        tool_raw = np.array(Image.open(osp.join(masks_dir, name)))
-        tool = tvf.to_tensor(tool_raw).cuda()
-        if tool.shape[0] > 1:
-            tool = tool[:1]
-        tool = (tool > 0.5).float().squeeze(0)  # [H,W], 1=tool
+        # masks_dir already stores the valid-region mask (nonzero = background/
+        # non-tool), inverted from raw tool masks in render_imed_nvs().
+        valid_raw = np.array(Image.open(osp.join(masks_dir, name)))
+        valid = tvf.to_tensor(valid_raw).cuda()
+        if valid.shape[0] > 1:
+            valid = valid[:1]
+        valid = (valid > 0.5).float().squeeze(0)  # [H,W], 1=background/non-tool
 
-        mask = global_mask * (1.0 - tool)  # [H,W]: overlap AND NOT tool
-        mask = mask.unsqueeze(0)            # [1,H,W]
+        mask = global_mask * valid  # [H,W]: overlap AND NOT tool
+        mask = mask.unsqueeze(0)    # [1,H,W]
 
         psnrs.append(_psnr(pred, gt, mask).item())
         ssims.append(_ssim(pred, gt, mask).item())
@@ -208,12 +200,13 @@ def compute_corrected_metrics(logdir, ws, imed_seq):
         "PSNR":  float(np.mean(psnrs)),
         "SSIM":  float(np.mean(ssims)),
         "LPIPS": float(np.mean(lpipss)),
-        "note":  "overlap_mask AND NOT tool_mask (corrected)"
+        "note":  "overlap_mask AND NOT tool_mask; standalone recomputation, "
+                 "independent of metrics.py, kept as a cross-check"
     }
     out_path = osp.join(logdir, "results_corrected.json")
     with open(out_path, "w") as f:
         json.dump({"mosca": results}, f, indent=2)
-    print(f"\n--- Corrected metrics (tools excluded) ---")
+    print(f"\n--- Standalone cross-check metrics (overlap AND NOT tool) ---")
     print(f"  PSNR : {results['PSNR']:.4f}")
     print(f"  SSIM : {results['SSIM']:.4f}")
     print(f"  LPIPS: {results['LPIPS']:.4f}")
@@ -248,12 +241,13 @@ def main():
     if not args.skip_render:
         render_imed_nvs(logdir=logdir, ws=ws, device=device)
 
-    # Organizers' metrics (tools included — current bug)
-    print("\nComputing organizers' metrics (overlap mask, tools included) ...")
+    # Organizers'-equivalent metrics (overlap AND NOT tool; matches the official
+    # Endo-4DGS/metrics.py convention now that masks/ is written pre-inverted).
+    print("\nComputing metrics.py results (overlap mask AND NOT tool) ...")
     metrics_evaluate([logdir])
 
-    # Corrected metrics (overlap AND NOT tool)
-    print("\nComputing corrected metrics (tools excluded) ...")
+    # Independent recomputation as a cross-check -- should match results.json.
+    print("\nComputing standalone cross-check metrics ...")
     compute_corrected_metrics(logdir=logdir, ws=ws, imed_seq=imed_seq)
 
 

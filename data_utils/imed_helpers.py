@@ -1,7 +1,10 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 import os, os.path as osp
+from glob import glob
 from scipy.spatial.transform import Rotation as R
+from scipy import ndimage
 
 
 def parse_imed_intrinsics(k_path):
@@ -56,6 +59,79 @@ def parse_imed_poses(pose_path):
         c2w_by_cam[cam_id] = c2w
     assert 0 in c2w_by_cam and 1 in c2w_by_cam
     return c2w_by_cam
+
+
+def build_train_overlap_mask(imed_seq, out_h, out_w):
+    """Reproject Endo2L (training) pixels into the Endo1L (test) camera bounds.
+
+    This is the mirror of metrics._build_global_imed_overlap_mask: that function
+    marks, in the *test* camera's grid, which pixels are covered by training-view
+    geometry (used for eval). This function instead marks, in the *training*
+    camera's grid, which training pixels have geometry landing inside the test
+    frame -- i.e. the region of the training image that actually determines
+    eval-region quality. Used to reweight the photometric/depth loss toward the
+    pixels that matter for scoring.
+
+    Returns a boolean [out_h, out_w] array in training (Endo2L) resolution.
+    """
+    k_matrices = parse_imed_intrinsics(osp.join(imed_seq, "K.txt"))
+    K2 = k_matrices["K2_L"]
+    K1 = k_matrices["K1_L"]
+    c2w_by_cam = parse_imed_poses(osp.join(imed_seq, "pose.txt"))
+    c2w_cam2 = c2w_by_cam[0]
+    c2w_cam1 = c2w_by_cam[1]
+    w2c_cam1 = np.linalg.inv(c2w_cam1)
+
+    depth_files = sorted(glob(osp.join(imed_seq, "endoscope2", "depthL", "*.npy")))
+    assert len(depth_files) > 0, "No depth files in endoscope2/depthL"
+    depth = np.load(depth_files[0]).astype(np.float32)
+    h2, w2 = depth.shape
+
+    u, v = np.meshgrid(np.arange(w2, dtype=np.float32), np.arange(h2, dtype=np.float32))
+    z = depth
+    valid = z > 0
+    x = (u - float(K2[0, 2])) * z / float(K2[0, 0])
+    y = (v - float(K2[1, 2])) * z / float(K2[1, 1])
+
+    pts_cam2 = np.stack([x, y, z], axis=-1).reshape(-1, 3)
+    uv_flat = np.stack([u, v], axis=-1).reshape(-1, 2)  # source (u,v) for every pixel
+    valid_flat = valid.reshape(-1)
+    pts_cam2 = pts_cam2[valid_flat]
+    uv_valid = uv_flat[valid_flat]
+
+    pts_cam2_h = np.concatenate([pts_cam2, np.ones((pts_cam2.shape[0], 1), dtype=np.float32)], axis=1)
+    pts_world = (c2w_cam2 @ pts_cam2_h.T).T
+    pts_cam1 = (w2c_cam1 @ pts_world.T).T[:, :3]
+
+    z1 = pts_cam1[:, 2]
+    front = z1 > 1e-6
+    pts_cam1 = pts_cam1[front]
+    z1 = z1[front]
+    uv_front = uv_valid[front]
+
+    u1 = float(K1[0, 0]) * (pts_cam1[:, 0] / z1) + float(K1[0, 2])
+    v1 = float(K1[1, 1]) * (pts_cam1[:, 1] / z1) + float(K1[1, 2])
+
+    h1 = int(round(float(K1[1, 2]) * 2))
+    w1 = int(round(float(K1[0, 2]) * 2))
+    if h1 <= 0 or w1 <= 0:
+        h1, w1 = h2, w2
+    in_bounds = (u1 >= 0) & (u1 < w1) & (v1 >= 0) & (v1 < h1)
+
+    uv_hit = uv_front[in_bounds]  # training-frame source pixels whose geometry lands in Endo1L
+
+    mask = np.zeros((h2, w2), dtype=np.uint8)
+    mask[uv_hit[:, 1].astype(np.int32), uv_hit[:, 0].astype(np.int32)] = 1
+    # Convert sparse reprojections into a contiguous valid support region.
+    mask = ndimage.binary_dilation(mask, structure=np.ones((3, 3), dtype=np.uint8), iterations=2)
+    mask = ndimage.binary_closing(mask, structure=np.ones((11, 11), dtype=np.uint8), iterations=2)
+    mask = ndimage.binary_fill_holes(mask)
+    mask = mask.astype(np.float32)
+    if (h2, w2) != (out_h, out_w):
+        mask_t = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)
+        mask_t = F.interpolate(mask_t, size=(out_h, out_w), mode="nearest")
+        mask = mask_t.squeeze(0).squeeze(0).numpy()
+    return mask.astype(bool)
 
 
 def k_to_fov_and_cxcy(K, H, W):

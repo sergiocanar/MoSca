@@ -467,6 +467,10 @@ def photometric_reconstruct(ws, log_path, fit_cfg):
 
     PHOTO_STATIC_WARM_STEPS = getattr(fit_cfg, "photo_static_warm_steps", -1)
 
+    IMED_OVERLAP_RGB_OUT_W = getattr(fit_cfg, "imed_overlap_rgb_out_w", 1.0)
+    IMED_OVERLAP_DEP_IN_W = getattr(fit_cfg, "imed_overlap_dep_in_w", 1.0)
+    IMED_OVERLAP_DEP_OUT_W = getattr(fit_cfg, "imed_overlap_dep_out_w", 1.0)
+
     device = torch.device("cuda:0")
 
     # load solved camera and s2d and rescale
@@ -484,6 +488,12 @@ def photometric_reconstruct(ws, log_path, fit_cfg):
         )
         .load_vos()
         .load_flow()
+        .load_tool_mask("train_masks")
+        .load_overlap_weight(
+            rgb_out_w=IMED_OVERLAP_RGB_OUT_W,
+            dep_in_w=IMED_OVERLAP_DEP_IN_W,
+            dep_out_w=IMED_OVERLAP_DEP_OUT_W,
+        )
         .to(device)
     )
     track_identification = np.load(osp.join(log_path, "track_identification.npz"))

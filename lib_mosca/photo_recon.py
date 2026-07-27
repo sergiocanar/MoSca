@@ -623,13 +623,18 @@ class DynReconstructionSolver:
                 render_dict_list.append(render_dict)
 
                 # compute losses
-                rgb_sup_mask = s2d.get_mask_by_key(sup_mask_type)[view_ind]
+                base_sup_mask = s2d.get_mask_by_key(sup_mask_type)[view_ind]
                 if hasattr(s2d, "tool_mask"):
-                    rgb_sup_mask = rgb_sup_mask * (~s2d.tool_mask[view_ind])
+                    base_sup_mask = base_sup_mask * (~s2d.tool_mask[view_ind])
+                rgb_sup_mask = base_sup_mask.float()
+                if hasattr(s2d, "overlap_weight_rgb"):
+                    rgb_sup_mask = rgb_sup_mask * s2d.overlap_weight_rgb
                 _l_rgb, _, _, _ = compute_rgb_loss(
                     s2d.rgb[view_ind].detach().clone(), render_dict, rgb_sup_mask
                 )
-                dep_sup_mask = rgb_sup_mask * s2d.dep_mask[view_ind]
+                dep_sup_mask = base_sup_mask.float() * s2d.dep_mask[view_ind]
+                if hasattr(s2d, "overlap_weight_dep"):
+                    dep_sup_mask = dep_sup_mask * s2d.overlap_weight_dep
                 _l_dep, _, _, _ = compute_dep_loss(
                     s2d.dep[view_ind].detach().clone(),
                     render_dict,

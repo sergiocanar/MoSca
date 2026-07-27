@@ -13,6 +13,12 @@ What it does:
   4. endoscope1/L/*.png   → ws/test_images/frame_XXXX.png
   5. endoscope1/toolL/*.png  → ws/test_masks/frame_XXXX.png
   6. K.txt + pose.txt     → ws/imed_meta.npz
+
+With --inference, steps 4-5 are skipped entirely (no read of anything under
+endoscope1/) and imed_meta.npz reuses the training resolution/frame count for
+H1/W1/frame_names_test instead. Hidden challenge test sequences do not ship
+endoscope1/ RGB, and rendering the Endo1L view only needs K1_L + the cam1 pose
+from K.txt/pose.txt.
 """
 
 import argparse
@@ -38,12 +44,14 @@ def make_dir(*parts):
     return d
 
 
-def prepare_workspace(imed_seq, ws):
+def prepare_workspace(imed_seq, ws, inference=False):
     imed_seq = osp.abspath(imed_seq)
     ws = osp.abspath(ws)
 
     print(f"iMED sequence : {imed_seq}")
     print(f"Workspace     : {ws}")
+    if inference:
+        print("  Mode          : inference (endoscope1/ will not be read)")
 
     # --- 1. Training images: endoscope2/L/*.png → ws/images/frame_XXXX.png ------
     src_imgs = sorted_frames(osp.join(imed_seq, "endoscope2", "L"), ".png")
@@ -109,36 +117,51 @@ def prepare_workspace(imed_seq, ws):
     print(f"  Pseudo-epi files created : {T}")
     print(f"  Train mask files created : {T}")
 
-    # --- 4. Test images: endoscope1/L/*.png → ws/test_images/frame_XXXX.png -----
-    src_test_imgs = sorted_frames(osp.join(imed_seq, "endoscope1", "L"), ".png")
-    assert len(src_test_imgs) == T, (
-        f"Test image count ({len(src_test_imgs)}) != training count ({T})"
-    )
-    test_img_dir = make_dir(ws, "test_images")
-    frame_names_test = []
-    for i, src in enumerate(src_test_imgs):
-        name = f"frame_{i:04d}"
-        dst = osp.join(test_img_dir, f"{name}.png")
-        if not osp.exists(dst):
-            shutil.copy2(src, dst)
-        frame_names_test.append(name)
-    print(f"  Test frames : {T}")
+    if inference:
+        # Submission/inference mode: hidden test sequences do not ship
+        # endoscope1/ RGB (or anything else under endoscope1/) at all. Rendering
+        # the Endo1L view only needs K1_L + the cam1 pose from K.txt/pose.txt,
+        # not any endoscope1 file. Reuse the training resolution -- Endo-4DGS's
+        # own iMED loader (scene/imed_loader.py) already assumes both endoscope
+        # streams share the same RGB resolution.
+        frame_names_test = frame_names_train
+        H1, W1 = H, W
+        print(f"  Test frames : {T} (inference mode, resolution reused from training: H1={H1}, W1={W1})")
+    else:
+        # --- 4. Test images: endoscope1/L/*.png → ws/test_images/frame_XXXX.png -
+        src_test_imgs = sorted_frames(osp.join(imed_seq, "endoscope1", "L"), ".png")
+        assert len(src_test_imgs) == T, (
+            f"Test image count ({len(src_test_imgs)}) != training count ({T})"
+        )
+        test_img_dir = make_dir(ws, "test_images")
+        frame_names_test = []
+        for i, src in enumerate(src_test_imgs):
+            name = f"frame_{i:04d}"
+            dst = osp.join(test_img_dir, f"{name}.png")
+            if not osp.exists(dst):
+                shutil.copy2(src, dst)
+            frame_names_test.append(name)
+        print(f"  Test frames : {T}")
 
-    sample_test = imageio.imread(src_test_imgs[0])
-    H1, W1 = sample_test.shape[:2]
-    print(f"  Test image size : H1={H1}, W1={W1}")
+        sample_test = imageio.imread(src_test_imgs[0])
+        H1, W1 = sample_test.shape[:2]
+        print(f"  Test image size : H1={H1}, W1={W1}")
 
-    # --- 5. Test masks: endoscope1/toolL/*.png → ws/test_masks/ -----------------
-    src_test_masks = sorted_frames(osp.join(imed_seq, "endoscope1", "toolL"), ".png")
-    assert len(src_test_masks) == T
-    test_mask_dir = make_dir(ws, "test_masks")
-    for i, src in enumerate(src_test_masks):
-        dst = osp.join(test_mask_dir, f"frame_{i:04d}.png")
-        if not osp.exists(dst):
-            shutil.copy2(src, dst)
+        # --- 5. Test masks: endoscope1/toolL/*.png → ws/test_masks/ -------------
+        src_test_masks = sorted_frames(osp.join(imed_seq, "endoscope1", "toolL"), ".png")
+        assert len(src_test_masks) == T
+        test_mask_dir = make_dir(ws, "test_masks")
+        for i, src in enumerate(src_test_masks):
+            dst = osp.join(test_mask_dir, f"frame_{i:04d}.png")
+            if not osp.exists(dst):
+                shutil.copy2(src, dst)
 
     # --- 6. Metadata: parse K.txt + pose.txt, compute depth scale ----------------
-    from data_utils.imed_helpers import parse_imed_intrinsics, parse_imed_poses
+    from data_utils.imed_helpers import (
+        parse_imed_intrinsics,
+        parse_imed_poses,
+        build_train_overlap_mask,
+    )
 
     k_matrices = parse_imed_intrinsics(osp.join(imed_seq, "K.txt"))
     K2L = k_matrices["K2_L"]
@@ -162,6 +185,11 @@ def prepare_workspace(imed_seq, ws):
     depth_scale_mm_to_norm = 1.0 / median_depth_mm
     print(f"  Median depth : {median_depth_mm:.2f} mm  (scale={depth_scale_mm_to_norm:.5f})")
 
+    # --- 7. Train-side overlap mask: which Endo2L pixels reproject into Endo1L ---
+    overlap_mask_train = build_train_overlap_mask(imed_seq, H, W)
+    overlap_pct = 100.0 * overlap_mask_train.mean()
+    print(f"  Train overlap mask : {overlap_pct:.1f}% of frame reprojects into Endo1L")
+
     meta_path = osp.join(ws, "imed_meta.npz")
     np.savez(
         meta_path,
@@ -178,6 +206,7 @@ def prepare_workspace(imed_seq, ws):
         frame_names_train=frame_names_train,
         frame_names_test=frame_names_test,
         imed_seq=imed_seq,
+        overlap_mask_train=overlap_mask_train,
     )
     print(f"  Metadata saved : {meta_path}")
     print("Done.")
@@ -187,5 +216,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser("iMED workspace preparation")
     parser.add_argument("--imed_seq", required=True, help="Path to iMED sequence dir")
     parser.add_argument("--ws", required=True, help="Target MoSca workspace dir")
+    parser.add_argument(
+        "--inference", action="store_true",
+        help="Submission mode: never read endoscope1/ (not available for hidden "
+             "test sequences); reuse training resolution/frame count instead.",
+    )
     args = parser.parse_args()
-    prepare_workspace(args.imed_seq, args.ws)
+    prepare_workspace(args.imed_seq, args.ws, inference=args.inference)

@@ -84,6 +84,16 @@ photo_temporal_diff_shift: [1, 3, 6]
 photo_temporal_diff_weight: [0.6, 0.3, 0.1]
 photo_optim_cam_after_steps: 999999  # never optimize cameras during photometric step
 
+# --- Overlap-region loss reweighting ----------------------------------------
+# Eval only scores the region that reprojects from Endo2L into Endo1L (see
+# metrics._build_global_imed_overlap_mask). Rather than a hard crop, downweight
+# (not zero) supervision outside it so the scaffold/background stay regularized,
+# and upweight depth accuracy inside it since geometry error there costs the
+# most PSNR/SSIM when the view actually shifts to Endo1L.
+imed_overlap_rgb_out_w: 0.4   # rgb+ssim weight outside the overlap (1.0 inside)
+imed_overlap_dep_in_w: 1.5    # depth weight inside the overlap (boosted)
+imed_overlap_dep_out_w: 0.3   # depth weight outside the overlap
+
 photo_s_ctrl_prune_opacity_th: 0.01
 photo_d_ctrl_prune_opacity_th: 0.01
 
