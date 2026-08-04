@@ -43,6 +43,25 @@ from metrics import evaluate as metrics_evaluate
 from metrics import _build_global_imed_overlap_mask
 
 
+def write_test_render_video(logdir, fps=12):
+    """Write a clean, single-panel Endo1L novel-view video: 100% model renders,
+    one frame per test image, no GT / debug panels. Output: <logdir>/test_render.mp4.
+    Encoded from the already-saved renders/, so it works with or without --skip_render."""
+    renders_dir = osp.join(logdir, "test", "mosca", "renders")
+    if not osp.isdir(renders_dir):
+        print(f"[test_render] no renders dir at {renders_dir}, skip")
+        return
+    frames = sorted(f for f in os.listdir(renders_dir) if f.lower().endswith(".png"))
+    if not frames:
+        print("[test_render] no render frames found, skip")
+        return
+    out = osp.join(logdir, "test_render.mp4")
+    with imageio.get_writer(out, fps=fps, macro_block_size=None, quality=8) as w:
+        for f in frames:
+            w.append_data(imageio.imread(osp.join(renders_dir, f))[..., :3])
+    print(f"[test_render] wrote clean render video: {out} ({len(frames)} frames @ {fps} fps)")
+
+
 @torch.no_grad()
 def render_imed_nvs(
     logdir,
@@ -240,6 +259,9 @@ def main():
 
     if not args.skip_render:
         render_imed_nvs(logdir=logdir, ws=ws, device=device)
+
+    # Clean single-panel Endo1L novel-view video (100% model renders, no debug panels).
+    write_test_render_video(logdir)
 
     # Organizers'-equivalent metrics (overlap AND NOT tool; matches the official
     # Endo-4DGS/metrics.py convention now that masks/ is written pre-inverted).
